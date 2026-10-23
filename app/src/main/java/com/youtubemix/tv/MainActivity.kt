@@ -164,7 +164,6 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.BLACK)
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             isFocusable = true
             isFocusableInTouchMode = true
             isVerticalScrollBarEnabled = false

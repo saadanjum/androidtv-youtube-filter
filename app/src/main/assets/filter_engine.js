@@ -186,16 +186,24 @@
     return hash.includes('/watch') || href.includes('/watch?');
   }
 
-  // Force hardware-decoded 1080p SDR codecs (H.264 / 8-bit VP9) in MediaSource Extensions
-  // Rejects AV1 (av01), 10-bit HDR VP9 (vp09.02), and >1080p (1440p/4K) which cause frame drops in Android TV WebView
+  // Force hardware-decoded 1080p30 H.264 (avc1) in MediaSource Extensions
+  // Rejects VP9/AV1 video codecs and 60fps streams which cause GPU texture compositing stutters in Android TV WebView
   try {
     if (window.MediaSource && typeof window.MediaSource.isTypeSupported === 'function') {
       const origIsTypeSupported = window.MediaSource.isTypeSupported.bind(window.MediaSource);
       window.MediaSource.isTypeSupported = function (mimeType) {
         if (typeof mimeType === 'string') {
           const lower = mimeType.toLowerCase();
-          // Block AV1 and 10-bit HDR VP9 Profile 2 so YouTube selects hardware-accelerated H.264 (avc1) or 8-bit VP9
-          if (lower.includes('av01') || lower.includes('vp09.02') || lower.includes('vp9.2')) {
+          // For video streams, only allow H.264 (avc1) — reject VP9 and AV1 so Android TV uses its dedicated hardware AVC decoder
+          if (
+            lower.startsWith('video/') &&
+            (lower.includes('av01') || lower.includes('vp9') || lower.includes('vp09'))
+          ) {
+            return false;
+          }
+          // Reject >30fps (e.g. 60fps) streams which stutter when composited with WebView UI overlays
+          const fpsMatch = lower.match(/framerate=(\d+)/);
+          if (fpsMatch && parseInt(fpsMatch[1], 10) > 30) {
             return false;
           }
           // Block >1080p (4K / 1440p) streams on 1080p WebView
@@ -445,14 +453,54 @@
       }
     }
 
-    // Record allowed seen channel so parent can 1-tap block it from phone portal
-    if (resolvedChannel && window.YouTubeMixBridge && window.YouTubeMixBridge.reportSeenChannel) {
-      try {
-        window.YouTubeMixBridge.reportSeenChannel(resolvedChannel, info.title || '');
-      } catch (_) {}
+    // Queue seen channel asynchronously (deduplicated) so we NEVER block the main thread with synchronous JNI calls during JSON parsing!
+    if (resolvedChannel) {
+      queueSeenChannelReport(resolvedChannel, info.title || '');
     }
 
     return { blocked: false };
+  }
+
+  // Deduplicated async JNI reporting queue so JSON parsing never blocks on cross-thread IPC
+  const seenChannelCache = new Set();
+  const pendingChannelReports = [];
+  const pendingBlockedReports = [];
+  let reportFlushTimer = null;
+
+  function scheduleJniReportFlush() {
+    if (reportFlushTimer) return;
+    reportFlushTimer = setTimeout(() => {
+      reportFlushTimer = null;
+      try {
+        if (window.YouTubeMixBridge) {
+          while (pendingChannelReports.length > 0) {
+            const item = pendingChannelReports.shift();
+            if (window.YouTubeMixBridge.reportSeenChannel) {
+              window.YouTubeMixBridge.reportSeenChannel(item.channel, item.title);
+            }
+          }
+          while (pendingBlockedReports.length > 0) {
+            const item = pendingBlockedReports.shift();
+            if (window.YouTubeMixBridge.reportBlockedItem) {
+              window.YouTubeMixBridge.reportBlockedItem(item.type, item.title, item.channel, item.rule);
+            }
+          }
+        }
+      } catch (_) {}
+    }, 2200);
+  }
+
+  function queueSeenChannelReport(channel, title) {
+    const key = channel.toLowerCase().trim();
+    if (!key || seenChannelCache.has(key)) return;
+    seenChannelCache.add(key);
+    pendingChannelReports.push({ channel, title });
+    scheduleJniReportFlush();
+  }
+
+  function queueBlockedItemReport(type, title, channel, rule) {
+    pendingBlockedReports.push({ type, title, channel, rule });
+    scheduleJniReportFlush();
   }
 
   // Extract header title from any YouTube TV shelf / row renderer
@@ -569,16 +617,12 @@
         if (videoInfo) {
           const decision = shouldBlockVideo(videoInfo);
           if (decision.blocked) {
-            if (window.YouTubeMixBridge && window.YouTubeMixBridge.reportBlockedItem) {
-              try {
-                window.YouTubeMixBridge.reportBlockedItem(
-                  decision.type,
-                  videoInfo.title || 'Untitled',
-                  inferChannelFromA11y(videoInfo),
-                  decision.rule
-                );
-              } catch (_) {}
-            }
+            queueBlockedItemReport(
+              decision.type,
+              videoInfo.title || 'Untitled',
+              inferChannelFromA11y(videoInfo),
+              decision.rule
+            );
             node.splice(i, 1);
             continue;
           }
@@ -618,13 +662,8 @@
         delete node[key];
         continue;
       }
-      // If onFocusCommand triggers inline playback, delete it as well
-      if (
-        key === 'onFocusCommand' &&
-        node[key] &&
-        (node[key].inlinePlaybackEndpoint ||
-          JSON.stringify(node[key]).includes('inlinePlayback'))
-      ) {
+      // If onFocusCommand triggers inline playback, delete it without calling expensive JSON.stringify
+      if (key === 'onFocusCommand' && node[key] && node[key].inlinePlaybackEndpoint) {
         delete node[key];
         continue;
       }
@@ -674,25 +713,8 @@
       });
     } catch (_) {}
 
-    // Check if the user is actually inside the fullscreen video player (#/watch)
-    // vs just hovering over a thumbnail preview on the Home / Search screen!
-    const hash = window.location.hash || '';
-    const href = window.location.href || '';
-    const isFullScreenWatch = hash.includes('/watch') || href.includes('/watch?');
-
-    if (!isFullScreenWatch) {
-      // It was just an inline hover auto-preview on the Home/Search screen!
-      // Record it silently in the parent portal log, DO NOT press Back/Escape!
-      if (window.YouTubeMixBridge && window.YouTubeMixBridge.reportBlockedItem) {
-        try {
-          window.YouTubeMixBridge.reportBlockedItem(
-            'TRANSCRIPT_PHRASE',
-            videoTitle || 'Preview Video',
-            channelName || '',
-            matchedPhrase
-          );
-        } catch (_) {}
-      }
+    if (!isWatchScreen()) {
+      queueBlockedItemReport('TRANSCRIPT_PHRASE', videoTitle || 'Preview Video', channelName || '', matchedPhrase);
       return;
     }
 
@@ -735,8 +757,11 @@
       .replace(/\s+/g, ' ');
   }
 
+  const originalFetch = window.fetch.bind(window);
+  let pendingCaptionTimer = null;
+
   // Layer 1: Spoken Transcript / Caption Scanner
-  async function inspectPlayerPayloadAndTranscript(playerJson) {
+  function inspectPlayerPayloadAndTranscript(playerJson) {
     if (!playerJson || typeof playerJson !== 'object') return;
     const cfg = currentConfig || loadConfig();
 
@@ -746,13 +771,11 @@
     const author = details.author || '';
     const shortDescription = details.shortDescription || '';
 
-    if (author && window.YouTubeMixBridge && window.YouTubeMixBridge.reportSeenChannel) {
-      try {
-        window.YouTubeMixBridge.reportSeenChannel(author, title);
-      } catch (_) {}
+    if (author) {
+      queueSeenChannelReport(author, title);
     }
 
-    // Check title, author, and description against rules first
+    // Check title, author, and description against rules immediately (0ms)
     const metaCheck = shouldBlockVideo({
       videoId,
       title: `${title} ${shortDescription}`,
@@ -780,41 +803,50 @@
       tracklist[0];
 
     if (!preferredTrack || !preferredTrack.baseUrl) return;
+    const captionUrl = preferredTrack.baseUrl;
 
-    try {
-      const resp = await originalFetch(preferredTrack.baseUrl);
-      const rawCaptionText = await resp.text();
-      if (!rawCaptionText) return;
+    // Defer the network fetch & XML regex scan by 1.8s so the video startup buffer and player UI animations run at 100% full speed!
+    if (pendingCaptionTimer) {
+      clearTimeout(pendingCaptionTimer);
+    }
+    pendingCaptionTimer = setTimeout(async () => {
+      pendingCaptionTimer = null;
+      if (!isWatchScreen()) return;
+      try {
+        const resp = await originalFetch(captionUrl);
+        const rawCaptionText = await resp.text();
+        if (!rawCaptionText || !isWatchScreen()) return;
 
-      // Strip XML tags if XML format, or extract text segments
-      const plainTranscript = decodeEntities(
-        rawCaptionText.replace(/<[^>]+>/g, ' ')
-      ).toLowerCase();
+        // Strip XML tags if XML format, or extract text segments
+        const plainTranscript = decodeEntities(
+          rawCaptionText.replace(/<[^>]+>/g, ' ')
+        ).toLowerCase();
 
-      // 1. Check YouTube's "[ __ ]" auto-censored profanity tags
-      if (cfg.blockCensoredCaptions && /\[\s*__\s*\]/.test(plainTranscript)) {
-        abortForbiddenVideoPlayback(videoId, title, author, '[ __ ] (Strong Language)');
-        return;
-      }
+        // 1. Check YouTube's "[ __ ]" auto-censored profanity tags
+        if (cfg.blockCensoredCaptions && /\[\s*__\s*\]/.test(plainTranscript)) {
+          abortForbiddenVideoPlayback(videoId, title, author, '[ __ ] (Strong Language)');
+          return;
+        }
 
-      // 2. Check Parent's Custom Spoken Transcript Phrases (e.g., "what the heck", "what the hell")
-      if (Array.isArray(cfg.transcriptPhrases)) {
-        for (const phrase of cfg.transcriptPhrases) {
-          if (!phrase) continue;
-          const cleanPhrase = phrase.toLowerCase().trim();
-          if (!cleanPhrase) continue;
-          if (plainTranscript.includes(cleanPhrase)) {
-            abortForbiddenVideoPlayback(videoId, title, author, phrase);
-            return;
+        // 2. Check Parent's Custom Spoken Transcript Phrases (e.g., "what the heck", "what the hell")
+        if (Array.isArray(cfg.transcriptPhrases)) {
+          for (const phrase of cfg.transcriptPhrases) {
+            if (!phrase) continue;
+            const cleanPhrase = phrase.toLowerCase().trim();
+            if (!cleanPhrase) continue;
+            if (plainTranscript.includes(cleanPhrase)) {
+              abortForbiddenVideoPlayback(videoId, title, author, phrase);
+              return;
+            }
           }
         }
+      } catch (err) {
+        console.warn('[YouTubeMix] Caption scan error:', err);
       }
-    } catch (err) {
-      console.warn('[YouTubeMix] Caption scan error:', err);
-    }
+    }, 1800);
   }
 
-  // Filter streamingData.adaptiveFormats to prefer hardware-accelerated <=1080p SDR codecs (H.264 / 8-bit VP9)
+  // Filter streamingData.adaptiveFormats to prefer hardware-decoded <=1080p <=30fps H.264 (avc1)
   function optimizePlayerStreamingFormats(playerJson) {
     try {
       if (!playerJson || !playerJson.streamingData) return;
@@ -827,8 +859,12 @@
         // Keep all audio tracks untouched
         if (mime.startsWith('audio/')) return true;
 
-        // Drop AV1 (av01) and 10-bit HDR VP9 (vp09.02) which cause WebView stutter
-        if (mime.includes('av01') || mime.includes('vp09.02') || mime.includes('vp9.2')) {
+        // Prefer H.264 (avc1) over VP9/AV1 which cause WebView GPU texture stutter
+        if (mime.includes('av01') || mime.includes('vp9') || mime.includes('vp09')) {
+          return false;
+        }
+        // Cap framerate at 30fps so WebView compositor never drops frames during UI overlays
+        if (typeof fmt.fps === 'number' && fmt.fps > 30) {
           return false;
         }
         // Cap video resolution at 1080p (1920x1080) to match 1080p WebView viewport
@@ -888,66 +924,61 @@
     }
   });
 
-  // Hook JSON.parse to catch all InnerTube responses regardless of transport (fetch or XHR)
-  const originalJsonParse = JSON.parse;
-  JSON.parse = function (text, reviver) {
-    const parsed = originalJsonParse.call(this, text, reviver);
+  // Zero-copy, deduplicated InnerTube payload processor (never runs twice on the same payload, zero JSON.stringify overhead!)
+  const processedPayloads = new WeakSet();
+
+  function processInnerTubeObject(parsed) {
+    if (!parsed || typeof parsed !== 'object' || !parsed.responseContext) return parsed;
+    if (processedPayloads.has(parsed)) return parsed;
+    processedPayloads.add(parsed);
+
     try {
-      if (parsed && typeof parsed === 'object' && parsed.responseContext) {
-        // If it's a /youtubei/v1/player response
-        if (parsed.videoDetails || parsed.streamingData || parsed.captions) {
-          optimizePlayerStreamingFormats(parsed);
-          lastPlayerPayload = parsed;
-          if (isWatchScreen()) {
-            const vid = parsed.videoDetails && parsed.videoDetails.videoId;
-            lastInspectedVideoId = vid || null;
-            inspectPlayerPayloadAndTranscript(parsed);
-          }
+      // 1. If it's a /youtubei/v1/player response
+      if (parsed.videoDetails || parsed.streamingData || parsed.captions) {
+        optimizePlayerStreamingFormats(parsed);
+        lastPlayerPayload = parsed;
+        if (isWatchScreen()) {
+          const vid = parsed.videoDetails && parsed.videoDetails.videoId;
+          lastInspectedVideoId = vid || null;
+          inspectPlayerPayloadAndTranscript(parsed);
         }
-        // If it's a browse, search, or next response
-        if (
-          parsed.contents ||
-          parsed.onResponseReceivedActions ||
-          parsed.onResponseReceivedEndpoints ||
-          parsed.continuationContents
-        ) {
-          sanitizeInnerTubeTree(parsed);
-        }
+      }
+      // 2. If it's a browse, search, or next response
+      if (
+        parsed.contents ||
+        parsed.onResponseReceivedActions ||
+        parsed.onResponseReceivedEndpoints ||
+        parsed.continuationContents
+      ) {
+        sanitizeInnerTubeTree(parsed);
       }
     } catch (e) {
       console.warn('[YouTubeMix] Sanitizer error:', e);
     }
     return parsed;
-  };
+  }
 
-  // Also keep reference to original fetch for caption downloading
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = async function (...args) {
-    const response = await originalFetch(...args);
-    const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
-
-    if (
-      url.includes('/youtubei/v1/browse') ||
-      url.includes('/youtubei/v1/search') ||
-      url.includes('/youtubei/v1/next') ||
-      url.includes('/youtubei/v1/player')
-    ) {
-      try {
-        const cloned = response.clone();
-        const data = await cloned.json();
-        // JSON.parse hook above already sanitizes `data` when `.json()` runs,
-        // so we return a fresh Response with the sanitized JSON body!
-        return new Response(JSON.stringify(data), {
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers
-        });
-      } catch (_) {
-        return response;
-      }
+  // Hook JSON.parse for XHR / text-based responses
+  const originalJsonParse = JSON.parse;
+  JSON.parse = function (text, reviver) {
+    const parsed = originalJsonParse.call(this, text, reviver);
+    if (!reviver && parsed && typeof parsed === 'object' && parsed.responseContext) {
+      processInnerTubeObject(parsed);
     }
-    return response;
+    return parsed;
   };
+
+  // Hook Response.prototype.json for Fetch API responses (zero response.clone() and zero JSON.stringify()!)
+  if (window.Response && window.Response.prototype && typeof window.Response.prototype.json === 'function') {
+    const origResponseJson = window.Response.prototype.json;
+    window.Response.prototype.json = async function (...args) {
+      const data = await origResponseJson.apply(this, args);
+      if (data && typeof data === 'object' && data.responseContext) {
+        processInnerTubeObject(data);
+      }
+      return data;
+    };
+  }
 
   // Also sanitize initial page data or live-rendered DOM shelves/tiles when rules change dynamically
   // Never run during fullscreen video playback (#/watch) so the main thread stays 100% idle for smooth 60fps video!

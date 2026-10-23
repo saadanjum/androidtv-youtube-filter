@@ -120,23 +120,36 @@ class FilterConfigRepository(context: Context) {
             notifyListeners()
         }
 
+    @Volatile
+    private var cachedRemainingSeconds: Long = prefs.getLong(KEY_TIMER_REMAINING_SECONDS, 3600L)
+
     var timerLimitMinutes: Int
         get() = prefs.getInt(KEY_TIMER_LIMIT_MINUTES, 60)
         set(value) {
             val clamped = value.coerceIn(5, 480)
+            cachedRemainingSeconds = clamped * 60L
             prefs.edit()
                 .putInt(KEY_TIMER_LIMIT_MINUTES, clamped)
-                .putLong(KEY_TIMER_REMAINING_SECONDS, clamped * 60L)
+                .putLong(KEY_TIMER_REMAINING_SECONDS, cachedRemainingSeconds)
                 .putBoolean(KEY_TIMER_UNLOCKED_TODAY, false)
                 .apply()
             notifyListeners()
         }
 
     var remainingSeconds: Long
-        get() = prefs.getLong(KEY_TIMER_REMAINING_SECONDS, 3600L)
+        get() = cachedRemainingSeconds
         set(value) {
-            prefs.edit().putLong(KEY_TIMER_REMAINING_SECONDS, value.coerceAtLeast(0L)).apply()
+            val next = value.coerceAtLeast(0L)
+            cachedRemainingSeconds = next
+            // Only flush to disk every 30 seconds or when reaching 0 to prevent 1Hz flash I/O stutters
+            if (next == 0L || next % 30L == 0L) {
+                prefs.edit().putLong(KEY_TIMER_REMAINING_SECONDS, next).apply()
+            }
         }
+
+    fun flushRemainingSeconds() {
+        prefs.edit().putLong(KEY_TIMER_REMAINING_SECONDS, cachedRemainingSeconds).apply()
+    }
 
     var unlockedForToday: Boolean
         get() = prefs.getBoolean(KEY_TIMER_UNLOCKED_TODAY, false)
@@ -146,7 +159,8 @@ class FilterConfigRepository(context: Context) {
         }
 
     fun grantBonusMinutes(minutes: Int) {
-        val added = (remainingSeconds + minutes * 60L).coerceAtLeast(minutes * 60L)
+        val added = (cachedRemainingSeconds + minutes * 60L).coerceAtLeast(minutes * 60L)
+        cachedRemainingSeconds = added
         prefs.edit()
             .putLong(KEY_TIMER_REMAINING_SECONDS, added)
             .putBoolean(KEY_TIMER_UNLOCKED_TODAY, false)
@@ -155,8 +169,9 @@ class FilterConfigRepository(context: Context) {
     }
 
     fun resetDailyTimer() {
+        cachedRemainingSeconds = timerLimitMinutes * 60L
         prefs.edit()
-            .putLong(KEY_TIMER_REMAINING_SECONDS, timerLimitMinutes * 60L)
+            .putLong(KEY_TIMER_REMAINING_SECONDS, cachedRemainingSeconds)
             .putBoolean(KEY_TIMER_UNLOCKED_TODAY, false)
             .apply()
         notifyListeners()

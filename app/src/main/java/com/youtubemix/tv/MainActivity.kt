@@ -164,6 +164,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.BLACK)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             isFocusable = true
             isFocusableInTouchMode = true
             isVerticalScrollBarEnabled = false
@@ -175,6 +176,7 @@ class MainActivity : Activity() {
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
+        @Suppress("DEPRECATION")
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -182,6 +184,7 @@ class MainActivity : Activity() {
             mediaPlaybackRequiresUserGesture = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
+            setRenderPriority(WebSettings.RenderPriority.HIGH)
             // Essential for 1080p TV WebView scaling
             useWideViewPort = true
             loadWithOverviewMode = true
@@ -725,9 +728,15 @@ class MainActivity : Activity() {
         return "127.0.0.1"
     }
 
+    override fun onPause() {
+        repository.flushRemainingSeconds()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         stopNativeVoiceRecognizer()
+        repository.flushRemainingSeconds()
         repository.removeListener(configListener)
         portalServer?.stop()
         webView.destroy()

@@ -180,6 +180,41 @@
     };
   }
 
+  function isWatchScreen() {
+    const hash = window.location.hash || '';
+    const href = window.location.href || '';
+    return hash.includes('/watch') || href.includes('/watch?');
+  }
+
+  // Force hardware-decoded 1080p SDR codecs (H.264 / 8-bit VP9) in MediaSource Extensions
+  // Rejects AV1 (av01), 10-bit HDR VP9 (vp09.02), and >1080p (1440p/4K) which cause frame drops in Android TV WebView
+  try {
+    if (window.MediaSource && typeof window.MediaSource.isTypeSupported === 'function') {
+      const origIsTypeSupported = window.MediaSource.isTypeSupported.bind(window.MediaSource);
+      window.MediaSource.isTypeSupported = function (mimeType) {
+        if (typeof mimeType === 'string') {
+          const lower = mimeType.toLowerCase();
+          // Block AV1 and 10-bit HDR VP9 Profile 2 so YouTube selects hardware-accelerated H.264 (avc1) or 8-bit VP9
+          if (lower.includes('av01') || lower.includes('vp09.02') || lower.includes('vp9.2')) {
+            return false;
+          }
+          // Block >1080p (4K / 1440p) streams on 1080p WebView
+          const heightMatch = lower.match(/height=(\d+)/);
+          if (heightMatch && parseInt(heightMatch[1], 10) > 1080) {
+            return false;
+          }
+          const widthMatch = lower.match(/width=(\d+)/);
+          if (widthMatch && parseInt(widthMatch[1], 10) > 1920) {
+            return false;
+          }
+        }
+        return origIsTypeSupported(mimeType);
+      };
+    }
+  } catch (e) {
+    console.warn('[YouTubeMix] MediaSource codec filter error:', e);
+  }
+
   let currentConfig = loadConfig();
   window.__updateYouTubeMixConfig = function (newConfig) {
     if (typeof newConfig === 'string') {
@@ -191,15 +226,14 @@
     } else {
       currentConfig = loadConfig();
     }
+    if (!isWatchScreen()) {
+      sweepLiveDomShelvesAndTiles();
+    }
   };
-
-  // Refresh config periodically in case updated via Phone Web Portal
-  setInterval(() => {
-    currentConfig = loadConfig();
-  }, 3000);
 
   // Normalize 1080p Android TV WebView viewport & prevent post-login scroll/offset cut-offs
   function enforceTvViewportFit() {
+    if (isWatchScreen()) return;
     try {
       // 1. Ensure viewport meta matches device-width 1.0 without user-scalable shifts
       let vp = document.querySelector('meta[name="viewport"]');
@@ -208,7 +242,7 @@
         vp.name = 'viewport';
         document.head.appendChild(vp);
       }
-      if (vp) {
+      if (vp && vp.content !== 'width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no') {
         vp.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no';
       }
 
@@ -241,22 +275,18 @@
       if (window.scrollX !== 0 || window.scrollY !== 0) {
         window.scrollTo(0, 0);
       }
-      if (document.documentElement) {
-        document.documentElement.scrollTop = 0;
-        document.documentElement.scrollLeft = 0;
-      }
-      if (document.body) {
-        document.body.scrollTop = 0;
-        document.body.scrollLeft = 0;
-      }
     } catch (_) {}
   }
 
   document.addEventListener('DOMContentLoaded', enforceTvViewportFit);
   window.addEventListener('load', enforceTvViewportFit);
   window.addEventListener('resize', enforceTvViewportFit);
-  window.addEventListener('scroll', () => window.scrollTo(0, 0));
-  setInterval(enforceTvViewportFit, 1500);
+  window.addEventListener('hashchange', enforceTvViewportFit);
+  window.addEventListener('scroll', () => {
+    if (window.scrollX !== 0 || window.scrollY !== 0) {
+      window.scrollTo(0, 0);
+    }
+  });
 
   // Helper to extract human-readable text from YouTube InnerTube Text objects
   function extractText(node) {
@@ -784,14 +814,47 @@
     }
   }
 
+  // Filter streamingData.adaptiveFormats to prefer hardware-accelerated <=1080p SDR codecs (H.264 / 8-bit VP9)
+  function optimizePlayerStreamingFormats(playerJson) {
+    try {
+      if (!playerJson || !playerJson.streamingData) return;
+      const adaptive = playerJson.streamingData.adaptiveFormats;
+      if (!Array.isArray(adaptive) || adaptive.length === 0) return;
+
+      const filtered = adaptive.filter((fmt) => {
+        if (!fmt || typeof fmt.mimeType !== 'string') return true;
+        const mime = fmt.mimeType.toLowerCase();
+        // Keep all audio tracks untouched
+        if (mime.startsWith('audio/')) return true;
+
+        // Drop AV1 (av01) and 10-bit HDR VP9 (vp09.02) which cause WebView stutter
+        if (mime.includes('av01') || mime.includes('vp09.02') || mime.includes('vp9.2')) {
+          return false;
+        }
+        // Cap video resolution at 1080p (1920x1080) to match 1080p WebView viewport
+        if (typeof fmt.height === 'number' && fmt.height > 1080) {
+          return false;
+        }
+        if (typeof fmt.width === 'number' && fmt.width > 1920) {
+          return false;
+        }
+        return true;
+      });
+
+      // Only apply if at least one video stream remains after filtering
+      const hasVideoLeft = filtered.some(
+        (f) => f && typeof f.mimeType === 'string' && f.mimeType.toLowerCase().startsWith('video/')
+      );
+      if (hasVideoLeft) {
+        playerJson.streamingData.adaptiveFormats = filtered;
+      }
+    } catch (e) {
+      console.warn('[YouTubeMix] Format optimization error:', e);
+    }
+  }
+
   let lastPlayerPayload = null;
   let lastInspectedVideoId = null;
-
-  function isWatchScreen() {
-    const hash = window.location.hash || '';
-    const href = window.location.href || '';
-    return hash.includes('/watch') || href.includes('/watch?');
-  }
 
   // Block inline thumbnail video previews from playing when not on the fullscreen #/watch screen
   const origVideoPlay = HTMLMediaElement.prototype.play;
@@ -833,6 +896,7 @@
       if (parsed && typeof parsed === 'object' && parsed.responseContext) {
         // If it's a /youtubei/v1/player response
         if (parsed.videoDetails || parsed.streamingData || parsed.captions) {
+          optimizePlayerStreamingFormats(parsed);
           lastPlayerPayload = parsed;
           if (isWatchScreen()) {
             const vid = parsed.videoDetails && parsed.videoDetails.videoId;
@@ -886,7 +950,9 @@
   };
 
   // Also sanitize initial page data or live-rendered DOM shelves/tiles when rules change dynamically
+  // Never run during fullscreen video playback (#/watch) so the main thread stays 100% idle for smooth 60fps video!
   function sweepLiveDomShelvesAndTiles() {
+    if (isWatchScreen()) return;
     try {
       const cfg = currentConfig || loadConfig();
       const keywords = (cfg.titleKeywords || []).map((k) => (k || '').toLowerCase().trim()).filter(Boolean);
@@ -951,7 +1017,7 @@
     } catch (_) {}
   }
 
-  setInterval(sweepLiveDomShelvesAndTiles, 1200);
+  setInterval(sweepLiveDomShelvesAndTiles, 2500);
 
   console.log('[YouTubeMix] Content Filter & Transcript Scanner active.');
 })();

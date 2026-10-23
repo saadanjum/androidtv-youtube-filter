@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>YouTube Mix — Parent Portal</title>
+  <style>
+    :root {
+      --bg: #0B0F19;
+      --surface: #121826;
+      --card: #1B2436;
+      --primary: #00E5A3;
+      --secondary: #00B4D8;
+      --danger: #FF4B4B;
+      --text: #F8FAFC;
+      --muted: #94A3B8;
+      --border: #2A364F;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 16px; max-width: 640px; margin: 0 auto; padding-bottom: 60px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-badge { background: var(--danger); color: #fff; font-weight: 800; padding: 6px 10px; border-radius: 8px; font-size: 14px; }
+    h1 { font-size: 20px; font-weight: 700; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+    .card h2 { font-size: 16px; font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+    .card p.desc { color: var(--muted); font-size: 13px; margin-bottom: 12px; line-height: 1.4; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    input[type="text"], input[type="password"], input[type="number"] {
+      flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 11px 14px; border-radius: 10px; font-size: 15px; outline: none;
+    }
+    input:focus { border-color: var(--primary); }
+    button {
+      background: var(--primary); color: #051912; border: none; font-weight: 700;
+      padding: 11px 16px; border-radius: 10px; font-size: 14px; cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:active { opacity: 0.8; }
+    button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    button.danger { background: rgba(255, 75, 75, 0.15); color: var(--danger); border: 1px solid rgba(255, 75, 75, 0.4); padding: 6px 10px; font-size: 12px; }
+    button.small { padding: 7px 12px; font-size: 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+      padding: 6px 12px; font-size: 13px; display: flex; align-items: center; gap: 8px;
+    }
+    .chip .remove { color: var(--danger); font-weight: bold; cursor: pointer; padding: 0 2px; }
+    .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+    .toggle-row:first-of-type { border-top: none; }
+    .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--surface); border: 1px solid var(--border); transition: .2s; border-radius: 26px;
+    }
+    .slider:before {
+      position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px;
+      background-color: var(--muted); transition: .2s; border-radius: 50%;
+    }
+    input:checked + .slider { background-color: rgba(0, 229, 163, 0.2); border-color: var(--primary); }
+    input:checked + .slider:before { transform: translateX(22px); background-color: var(--primary); }
+    .timer-display { font-size: 26px; font-weight: 800; color: var(--primary); margin: 8px 0 12px; }
+    .btn-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .list-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid var(--border); gap: 10px;
+    }
+    .list-item:last-child { border-bottom: none; }
+    .list-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .badge { font-size: 11px; padding: 3px 7px; border-radius: 6px; background: rgba(0, 180, 216, 0.15); color: var(--secondary); font-weight: 600; }
+    #pinOverlay {
+      position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
+      justify-content: center; align-items: center; padding: 24px; z-index: 100;
+    }
+    .hidden { display: none !important; }
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: var(--primary); color: #04150f; font-weight: 700; padding: 10px 20px;
+      border-radius: 999px; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- PIN Login Overlay -->
+  <div id="pinOverlay">
+    <div class="card" style="width: 100%; max-width: 360px; text-align: center;">
+      <div class="brand-badge" style="display:inline-block; margin-bottom: 12px;">YouTube Mix TV</div>
+      <h2>Parent PIN Required</h2>
+      <p class="desc">Enter your 4-digit Parent PIN to manage TV filters & screen time (Default: 1234)</p>
+      <div class="row">
+        <input type="password" id="pinInput" maxlength="4" inputmode="numeric" placeholder="••••" style="text-align:center; font-size:22px; letter-spacing:8px;" />
+      </div>
+      <button style="width:100%; margin-top: 8px;" onclick="verifyPin()">Unlock Dashboard</button>
+      <p id="pinError" style="color: var(--danger); font-size: 13px; margin-top: 10px;" class="hidden">Incorrect PIN. Try again.</p>
+    </div>
+  </div>
+
+  <header>
+    <div class="brand">
+      <span class="brand-badge">YT MIX</span>
+      <div>
+        <h1>Parent Filter Portal</h1>
+        <div class="sub">Live Android TV Protection</div>
+      </div>
+    </div>
+    <button class="secondary small" onclick="fetchStatus()">Refresh</button>
+  </header>
+
+  <!-- 1. Screen Time Timer Card -->
+  <div class="card">
+    <h2>
+      <span>Screen-Time Timer</span>
+      <span class="badge" id="timerBadge">Active</span>
+    </h2>
+    <p class="desc">When time runs out, a friendly screen appears on the TV where you can enter your 4-digit PIN on the TV remote (or tap below) to grant more time.</p>
+    <div class="timer-display" id="timerRemainingText">--:--</div>
+    <div class="btn-grid" style="margin-bottom: 12px;">
+      <button class="small" onclick="timerAction('grant', 15)">+15 Mins</button>
+      <button class="small" onclick="timerAction('grant', 30)">+30 Mins</button>
+      <button class="secondary small" onclick="timerAction('unlock_today', 0)">Unlock for Today</button>
+      <button class="secondary small" onclick="timerAction('lock_now', 0)">Lock TV Now</button>
+    </div>
+    <div class="row" style="margin-top: 10px;">
+      <input type="number" id="timerLimitInput" min="5" max="480" placeholder="Daily limit (mins)" />
+      <button class="secondary" onclick="saveTimerLimit()">Set Limit (Mins)</button>
+    </div>
+    <div class="toggle-row">
+      <div>
+        <div style="font-size: 14px; font-weight: 600;">Enable Screen-Time Timer</div>
+        <div class="list-meta">Count down while YouTube Mix is open</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="timerEnabledToggle" onchange="toggleSetting('timerEnabled', this.checked)" />
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- 2. Global Safety Toggles -->
+  <div class="card">
+    <h2>Quick Safety Rules</h2>
+    <div class="toggle-row">
+      <div>
+        <div style="font-size: 14px; font-weight: 600;">Hide All YouTube Shorts</div>
+        <div class="list-meta">Strips Shorts shelves & vertical clips from Home and Search</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="hideShortsToggle" onchange="toggleSetting('hideShorts', this.checked)" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <div>
+        <div style="font-size: 14px; font-weight: 600;">Block Strong Profanity ([ __ ] in Captions)</div>
+        <div class="list-meta">Auto-exits videos where YouTube's transcript censors swear words</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="blockCensoredToggle" onchange="toggleSetting('blockCensoredCaptions', this.checked)" />
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- 3. Spoken Transcript Phrase Blacklist -->
+  <div class="card">
+    <h2>Spoken Transcript Blacklist</h2>
+    <p class="desc">Scans the video's closed-caption transcript before playback. If streamers say these phrases (e.g., "what the heck", "what the hell"), the video immediately stops.</p>
+    <div class="row">
+      <input type="text" id="newTranscriptPhrase" placeholder='e.g. "what the heck"' />
+      <button onclick="addItem('transcriptPhrases', 'newTranscriptPhrase')">Add Phrase</button>
+    </div>
+    <div class="chips" id="transcriptPhrasesList"></div>
+  </div>
+
+  <!-- 4. Video Title Keyword Blacklist -->
+  <div class="card">
+    <h2>Title & Topic Keyword Blacklist</h2>
+    <p class="desc">Hides any video recommendation or search result whose title matches these words.</p>
+    <div class="row">
+      <input type="text" id="newTitleKeyword" placeholder='e.g. "skibidi", "prank"' />
+      <button onclick="addItem('titleKeywords', 'newTitleKeyword')">Add Keyword</button>
+    </div>
+    <div class="chips" id="titleKeywordsList"></div>
+  </div>
+
+  <!-- 5. Channel Blacklist + 1-Tap Recently Seen Channels -->
+  <div class="card">
+    <h2>Channel Blacklist</h2>
+    <p class="desc">Your child can freely explore YouTube recommendations, except channels on this blacklist.</p>
+    <div class="row">
+      <input type="text" id="newBlockedChannel" placeholder="Channel name to block..." />
+      <button onclick="addItem('blockedChannels', 'newBlockedChannel')">Block Channel</button>
+    </div>
+    <div class="chips" id="blockedChannelsList"></div>
+
+    <h3 style="font-size: 14px; margin-top: 18px; margin-bottom: 8px; color: var(--secondary);">
+      Recently Seen Channels on TV (1-Tap Block)
+    </h3>
+    <div id="recentChannelsList">
+      <div class="list-meta">Channels appearing on the TV feed will show up here...</div>
+    </div>
+  </div>
+
+  <!-- 6. Recently Blocked Activity Log -->
+  <div class="card">
+    <h2>Recently Blocked Videos</h2>
+    <p class="desc">Live log of videos or transcripts caught by your filters.</p>
+    <div id="blockedEventsList">
+      <div class="list-meta">No blocked items yet in this session.</div>
+    </div>
+  </div>
+
+  <!-- 7. Change Parent PIN -->
+  <div class="card">
+    <h2>Change 4-Digit Parent PIN</h2>
+    <p class="desc">Used both on the TV screen-time overlay and this web portal.</p>
+    <div class="row">
+      <input type="password" id="newPinInput" maxlength="4" inputmode="numeric" placeholder="New 4-digit PIN" />
+      <button class="secondary" onclick="updatePin()">Save PIN</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden">Saved!</div>
+
+  <script>
+    let savedPin = localStorage.getItem('ytmix_pin') || '';
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.remove('hidden');
+      setTimeout(() => t.classList.add('hidden'), 2000);
+    }
+
+    async function apiCall(path, method = 'GET', body = null) {
+      const headers = { 'X-Parent-Pin': savedPin, 'Content-Type': 'application/json' };
+      const opts = { method, headers };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      if (res.status === 401) {
+        document.getElementById('pinOverlay').classList.remove('hidden');
+        throw new Error('Unauthorized');
+      }
+      return res.json();
+    }
+
+    async function verifyPin() {
+      const pin = document.getElementById('pinInput').value.trim();
+      savedPin = pin;
+      try {
+        await fetchStatus();
+        localStorage.setItem('ytmix_pin', pin);
+        document.getElementById('pinOverlay').classList.add('hidden');
+        document.getElementById('pinError').classList.add('hidden');
+      } catch (e) {
+        document.getElementById('pinError').classList.remove('hidden');
+      }
+    }
+
+    function formatTime(sec) {
+      if (sec <= 0) return '0m 0s (Time Up)';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${m}m ${s}s remaining`;
+    }
+
+    function renderChips(containerId, listName, items) {
+      const el = document.getElementById(containerId);
+      el.innerHTML = '';
+      if (!items || items.length === 0) {
+        el.innerHTML = '<span class="list-meta">None configured</span>';
+        return;
+      }
+      items.forEach(item => {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        const span = document.createElement('span');
+        span.textContent = item;
+        const rem = document.createElement('span');
+        rem.className = 'remove';
+        rem.textContent = '✕';
+        rem.onclick = () => removeItem(listName, item);
+        chip.appendChild(span);
+        chip.appendChild(rem);
+        el.appendChild(chip);
+      });
+    }
+
+    async function fetchStatus() {
+      const data = await apiCall('/api/status');
+      document.getElementById('pinOverlay').classList.add('hidden');
+
+      document.getElementById('hideShortsToggle').checked = data.hideShorts;
+      document.getElementById('blockCensoredToggle').checked = data.blockCensoredCaptions;
+      document.getElementById('timerEnabledToggle').checked = data.timerEnabled;
+      document.getElementById('timerLimitInput').value = data.timerLimitMinutes;
+
+      const timerText = document.getElementById('timerRemainingText');
+      const badge = document.getElementById('timerBadge');
+      if (!data.timerEnabled) {
+        timerText.textContent = 'Timer Off';
+        badge.textContent = 'Disabled';
+      } else if (data.unlockedForToday) {
+        timerText.textContent = 'Unlocked for Today';
+        badge.textContent = 'Bypassed';
+      } else {
+        timerText.textContent = formatTime(data.remainingSeconds);
+        badge.textContent = data.remainingSeconds > 0 ? 'Counting Down' : 'Locked (PIN Required)';
+      }
+
+      renderChips('transcriptPhrasesList', 'transcriptPhrases', data.transcriptPhrases);
+      renderChips('titleKeywordsList', 'titleKeywords', data.titleKeywords);
+      renderChips('blockedChannelsList', 'blockedChannels', data.blockedChannels);
+
+      // Render Recent Channels
+      const recEl = document.getElementById('recentChannelsList');
+      recEl.innerHTML = '';
+      const blockedSet = new Set((data.blockedChannels || []).map(c => c.toLowerCase()));
+      const unblockedRecent = (data.recentChannels || []).filter(c => !blockedSet.has(c.name.toLowerCase()));
+      if (unblockedRecent.length === 0) {
+        recEl.innerHTML = '<div class="list-meta">Browse on the TV to see channels appear here...</div>';
+      } else {
+        unblockedRecent.slice(0, 15).forEach(ch => {
+          const row = document.createElement('div');
+          row.className = 'list-item';
+          const info = document.createElement('div');
+          const title = document.createElement('div');
+          title.style.fontWeight = '600';
+          title.style.fontSize = '14px';
+          title.textContent = ch.name;
+          const sub = document.createElement('div');
+          sub.className = 'list-meta';
+          sub.textContent = `Seen in: "${ch.lastVideoTitle}" (${ch.timestamp})`;
+          info.appendChild(title);
+          info.appendChild(sub);
+
+          const btn = document.createElement('button');
+          btn.className = 'danger';
+          btn.textContent = 'Blacklist Channel';
+          btn.onclick = () => quickBlockChannel(ch.name);
+
+          row.appendChild(info);
+          row.appendChild(btn);
+          recEl.appendChild(row);
+        });
+      }
+
+      // Render Blocked Log
+      const blkEl = document.getElementById('blockedEventsList');
+      blkEl.innerHTML = '';
+      if (!data.blockedEvents || data.blockedEvents.length === 0) {
+        blkEl.innerHTML = '<div class="list-meta">No videos blocked yet in this session.</div>';
+      } else {
+        data.blockedEvents.slice(0, 15).forEach(ev => {
+          const row = document.createElement('div');
+          row.className = 'list-item';
+          const info = document.createElement('div');
+          const t = document.createElement('div');
+          t.style.fontSize = '13px';
+          t.style.fontWeight = '600';
+          t.textContent = ev.videoTitle;
+          const m = document.createElement('div');
+          m.className = 'list-meta';
+          m.textContent = `[${ev.type}] Rule: "${ev.matchedRule}" • Channel: ${ev.channelName || 'Unknown'} (${ev.timestamp})`;
+          info.appendChild(t);
+          info.appendChild(m);
+          row.appendChild(info);
+          blkEl.appendChild(row);
+        });
+      }
+    }
+
+    async function addItem(listName, inputId) {
+      const input = document.getElementById(inputId);
+      const value = input.value.trim();
+      if (!value) return;
+      await apiCall('/api/list', 'POST', { action: 'add', list: listName, value });
+      input.value = '';
+      showToast('Added & synced to TV!');
+      fetchStatus();
+    }
+
+    async function quickBlockChannel(channelName) {
+      await apiCall('/api/list', 'POST', { action: 'add', list: 'blockedChannels', value: channelName });
+      showToast(`Blocked ${channelName}!`);
+      fetchStatus();
+    }
+
+    async function removeItem(listName, value) {
+      await apiCall('/api/list', 'POST', { action: 'remove', list: listName, value });
+      showToast('Removed!');
+      fetchStatus();
+    }
+
+    async function toggleSetting(key, value) {
+      await apiCall('/api/settings', 'POST', { [key]: value });
+      showToast('Updated!');
+      fetchStatus();
+    }
+
+    async function saveTimerLimit() {
+      const mins = parseInt(document.getElementById('timerLimitInput').value, 10);
+      if (!mins || mins < 5) return;
+      await apiCall('/api/timer', 'POST', { action: 'set_limit', minutes: mins });
+      showToast(`Timer set to ${mins} mins`);
+      fetchStatus();
+    }
+
+    async function timerAction(action, minutes) {
+      await apiCall('/api/timer', 'POST', { action, minutes });
+      showToast('Screen-time updated!');
+      fetchStatus();
+    }
+
+    async function updatePin() {
+      const newPin = document.getElementById('newPinInput').value.trim();
+      if (!/^\d{4}$/.test(newPin)) {
+        alert('PIN must be exactly 4 digits.');
+        return;
+      }
+      await apiCall('/api/settings', 'POST', { newPin });
+      savedPin = newPin;
+      localStorage.setItem('ytmix_pin', newPin);
+      document.getElementById('newPinInput').value = '';
+      showToast('PIN updated!');
+    }
+
+    if (savedPin) {
+      fetchStatus().catch(() => {});
+    }
+    setInterval(() => {
+      if (savedPin && document.getElementById('pinOverlay').classList.contains('hidden')) {
+        fetchStatus().catch(() => {});
+      }
+    }, 5000);
+  </script>
+</body>
+</html>
